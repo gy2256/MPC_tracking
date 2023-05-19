@@ -6,6 +6,7 @@ import subprocess
 import glob
 
 from CubicSpline import cubic_spline_planner
+from CubicSpline import spline_continuity
 
 '''
 Created on Wednesday May 17th, 2023
@@ -141,7 +142,6 @@ class MPC_controller:
         u_traj = []
 
         t_step = 0
-        # TO DO: find the closest point to track and generate corsponding local x_ref
 
         while time < self.simulation_max_time:
             x_local_ref = self.calculate_local_reference(x_ref, t_step)
@@ -204,12 +204,25 @@ class MPC_controller:
 
         return v_interpolated_x, v_interpolated_y
 
-    def waypoints_to_x_ref(self, waypoints, interpolated_dist, target_speed):
+    def waypoints_to_x_ref(self, waypoints, interpolated_dist, target_speed, interpolation_type="linear"):
+        if interpolation_type == "linear":
+            rx, ry = [], []
+            sp = spline_continuity.Spline2D(x=waypoints[:, [0]].flatten(), y=waypoints[:, [1]].flatten(), kind="linear")
+            s = np.arange(0, sp.s[-1], interpolated_dist)
+            for i_s in s:
+                ix, iy = sp.calc_position(i_s)
+                rx.append(ix)
+                ry.append(iy)
 
-        interpolated_x1, interpolated_x3, _, _, _ = cubic_spline_planner.calc_spline_course(
-                                x=waypoints[:, [0]].flatten(),
-                                y=waypoints[:, [1]].flatten(),
-                                ds=interpolated_dist)  # ds is the distance between interpolated points
+            interpolated_x1 = np.array(rx)
+            interpolated_x3 = np.array(ry)
+
+        elif interpolation_type == "cubic":
+            interpolated_x1, interpolated_x3, _, _, _ = cubic_spline_planner.calc_spline_course(
+                x=waypoints[:, [0]].flatten(),
+                y=waypoints[:, [1]].flatten(),
+                ds=interpolated_dist)  # ds is the distance between interpolated points
+
 
         x_ref = np.zeros((self.state_dimension, len(interpolated_x1)))
         # Fill reference trajectory with interpolated positions in x1 and x3
@@ -234,20 +247,22 @@ if __name__ == "__main__":
     target_speed = 2.0  # [m/s]
     interpolated_dist = 0.2  # [m] distance between interpolated position state
 
-    x_init = np.array([1.0, 0.0, 1.0, 0.0]) #[p1,v1,p2,v2]
+    waypoints = np.load("grid_world_random_walk_path.npy", allow_pickle=True)
+
+    x_init = np.array([waypoints[0, 0], 0.0, waypoints[0, 1], 0.0])  # [p1,v1,p2,v2]
 
     MPC = MPC_controller(MPC_horizon=5,dt=0.2,
-                        state_weight=np.diag([1.0, 0.1, 1.0, 0.1]), # Q matrix
+                        state_weight=np.diag([2.0, 0.1, 2.0, 0.1]), # Q matrix
                         control_weight=np.diag([0.1, 0.1]),x_init=x_init,
                          show_animation=True,save_animation = False) # R matrix
 
-    waypoints = np.array([[1.0, 1.0],[2.0, 2.0],[3.0, 0.0],[4.0, 3.0],[5.0, 5.0],
-                          [5.0,0.0],[3.5,2.0],[2.0,4.0],[0.0, 0.0]]) # [p1, p2]
+    #waypoints = np.array([[1.0, 1.0],[2.0, 2.0],[3.0, 0.0],[4.0, 3.0],[5.0, 5.0],
+    #                      [5.0,0.0],[3.5,2.0],[2.0,4.0],[0.0, 0.0]]) # [p1, p2]
 
-    # Need to ensure reachability of the goal and resolve singularity issue
-    #waypoints = np.load("grid_world_random_walk_path.npy", allow_pickle=True)
+    #waypoints = np.array([[1.0, 1.0],[1.0,5.0],[5.0,5.0],[5.0,3.0]])
 
-    x_ref = MPC.waypoints_to_x_ref(waypoints, interpolated_dist, target_speed)
+
+    x_ref = MPC.waypoints_to_x_ref(waypoints, interpolated_dist, target_speed, interpolation_type="linear")
 
     simulation_traj, u_traj = MPC.simulation(x_ref)
 
