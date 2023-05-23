@@ -7,6 +7,7 @@ import glob
 
 from CubicSpline import cubic_spline_planner
 from CubicSpline import spline_continuity
+from Utilits.utils import read_waypoints
 
 '''
 Created on Wednesday May 17th, 2023
@@ -33,12 +34,9 @@ class MPC_controller:
         self.control_dimension = 2
         self.goal_dist = 0.2
 
-        self.simulation_max_time = 25.0
+        self.simulation_max_time = 40.0
 
-    
-    def read_waypoints(self):
-        self.waypoints = np.load("grid_world_random_walk_path.npy", allow_pickle=True)
-        return self.waypoints
+
     
     def get_nparray_from_matrix(self, x):
         return np.array(x).flatten()
@@ -180,14 +178,13 @@ class MPC_controller:
                                 "/Animation_images/" + "t_step_" + str(t_step) + ".png")
 
         if self.save_animation:
-            subprocess.call(['ffmpeg', '-r', '30', '-i', current_directory_path+"/Animation_images"+"/t_step_%01d.png",
-                                     '-r', '30', '-pix_fmt', 'yuv420p',
+            subprocess.call(['ffmpeg', '-r', '15', '-i', current_directory_path+"/Animation_images"+"/t_step_%01d.png",
+                                     '-r', '15', '-pix_fmt', 'yuv420p',
                              current_directory_path+"/Saved_movies/"+"MPC_tracking.mp4"])
 
             for file_name in glob.glob(current_directory_path +
                             "/Animation_images/"+"*.png"):
                 os.remove(file_name)
-
 
         return np.array(simulation_traj), np.array(u_traj)
 
@@ -207,7 +204,8 @@ class MPC_controller:
     def waypoints_to_x_ref(self, waypoints, interpolated_dist, target_speed, interpolation_type="linear"):
         if interpolation_type == "linear":
             rx, ry = [], []
-            sp = spline_continuity.Spline2D(x=waypoints[:, [0]].flatten(), y=waypoints[:, [1]].flatten(), kind="linear")
+            sp = spline_continuity.Spline2D(x=waypoints[:, [0]].flatten(), y=waypoints[:, [1]].flatten(), 
+                                            kind="linear")
             s = np.arange(0, sp.s[-1], interpolated_dist)
             for i_s in s:
                 ix, iy = sp.calc_position(i_s)
@@ -243,24 +241,19 @@ class MPC_controller:
 
 
 if __name__ == "__main__":
-    grid_size = 8
-    target_speed = 2.0  # [m/s]
+    plot_border = 32
+    target_speed = 10.0  # [m/s]
     interpolated_dist = 0.2  # [m] distance between interpolated position state
 
-    waypoints = np.load("grid_world_random_walk_path.npy", allow_pickle=True)
+    path_to_continuous_waypoints = os.getcwd()+"/Saved_continuous_waypoints/state_double_integrator_traj.npy"
+    waypoints = read_waypoints(path_to_continuous_waypoints)
 
     x_init = np.array([waypoints[0, 0], 0.0, waypoints[0, 1], 0.0])  # [p1,v1,p2,v2]
 
     MPC = MPC_controller(MPC_horizon=5,dt=0.2,
-                        state_weight=np.diag([2.0, 0.1, 2.0, 0.1]), # Q matrix
+                        state_weight=np.diag([5.0, 0.1, 5.0, 0.1]), # Q matrix
                         control_weight=np.diag([0.1, 0.1]),x_init=x_init,
                          show_animation=True,save_animation = False) # R matrix
-
-    #waypoints = np.array([[1.0, 1.0],[2.0, 2.0],[3.0, 0.0],[4.0, 3.0],[5.0, 5.0],
-    #                      [5.0,0.0],[3.5,2.0],[2.0,4.0],[0.0, 0.0]]) # [p1, p2]
-
-    #waypoints = np.array([[1.0, 1.0],[1.0,5.0],[5.0,5.0],[5.0,3.0]])
-
 
     x_ref = MPC.waypoints_to_x_ref(waypoints, interpolated_dist, target_speed, interpolation_type="linear")
 
@@ -270,12 +263,12 @@ if __name__ == "__main__":
     ax.plot(simulation_traj[:,[0]], simulation_traj[:,[2]], marker='o', linestyle='-', color='blue', label='MPC Path')
     ax.plot(x_ref[0].flatten(), x_ref[2].flatten(),marker = '.', linestyle='--', color='grey', label='x_ref')
     ax.scatter(waypoints[:,[0]], waypoints[:,[1]], marker='o', color='black', label='waypoints',s=100)
-    ax.set_xticks(range(grid_size))
-    ax.set_yticks(range(grid_size))
-    ax.set_xlim([-0.5, grid_size - 0.5])
-    ax.set_ylim([-0.5, grid_size - 0.5])
+    ax.set_xticks(range(plot_border))
+    ax.set_yticks(range(plot_border))
+    ax.set_xlim([-0.5, plot_border - 0.5])
+    ax.set_ylim([-0.5, plot_border - 0.5])
 
-    ax.set_title("MPC Tracking Algorithm for Random Walk Result")
+    ax.set_title("MPC Tracking")
     ax.set_xlabel("X1-coordinate")
     ax.set_ylabel("X3-coordinate")
     ax.legend()
