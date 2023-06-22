@@ -4,6 +4,8 @@ import os
 import cvxpy
 import subprocess
 import glob
+import gurobipy as gp
+from gurobipy import GRB
 
 from Utilits.CubicSpline import cubic_spline_planner, spline_continuity
 from Utilits.utils import read_waypoints
@@ -24,11 +26,12 @@ class MPC_controller:
         self.R = control_weight
         self.obstacles = obstacles
         self.Qf = self.Q
-        self.v_lim = [-5.0, 5.0]
-        self.u_max = 20.0
+        self.v_lim = 5.0
+        self.u_lim = 20.0
         self.x_init = x_init
         self.save_animation = save_animation
         self.show_animation = show_animation
+        self.gamma = 5.0 # CBF parameters
 
         self.state_dimension = 4
         self.control_dimension = 2
@@ -48,8 +51,18 @@ class MPC_controller:
 
         Output: State Trajectory and Control Trajectory for the next N steps
         '''
-        x = cvxpy.Variable((self.state_dimension, self.N+1)) #[pos_1, vel_1, pos_2, vel_2]
-        u = cvxpy.Variable((self.control_dimension, self.N)) #[acceleration_1, acceleration_2]
+
+        model = gp.Model("MPC_QCQP")
+        model.remove(model.getConstrs())
+        model.params.NonConvex = 2
+        model.Params.LogToConsole = 0
+        x = model.addMVar((self.state_dimension, self.N+1),lb=-GRB.INFINITY,
+                          ub=GRB.INFINITY,vtype=GRB.CONTINUOUS,name="X") #[pos_1, vel_1, pos_2, vel_2]
+        u = model.addMVar((self.control_dimension, self.N),lb=-GRB.INFINITY,
+                          ub=GRB.INFINITY,vtype=GRB.CONTINUOUS,name="U") #[acceleration_1, acceleration_2]
+
+        z = model.addMVar((self.state_dimension, self.N + 1), lb=-GRB.INFINITY,
+                          ub=GRB.INFINITY, vtype=GRB.CONTINUOUS,name="diff_X")  # [pos_1, vel_1, pos_2, vel_2]
 
         # System dynamics
         A = np.zeros((self.state_dimension, self.state_dimension))
@@ -67,38 +80,43 @@ class MPC_controller:
         B[2,1] = 0.5*self.dt**2
         B[3,1] = self.dt
 
-        cost = 0.0
-        constraints = []
-
+        # Initial State Constraint
+        model.addConstr(x[:,0] == x_current)
 
         for t in range(self.N):
-            #define Cost function
-            cost += cvxpy.quad_form(u[:,t], self.R)
-            cost += cvxpy.quad_form(x_ref[:,t]-x[:,t], self.Q)
-
             # Dynamics Constraint
-            constraints += [x[:, t + 1] == A @ x[:, t] + B @ u[:, t]]
+            model.addConstr(x[:, t + 1] == A @ x[:, t] + B @ u[:, t])
+            model.addConstr(z[:,t] == x_ref[:,t]-x[:,t])
 
-        
-        cost += cvxpy.quad_form(x_ref[:, self.N] - x[:, self.N], self.Qf)
+            for obs in self.obstacles:
+                model.addConstr(((x[0,t+1]-obs[0])*(x[0,t+1]-obs[0]) + (x[2,t+1]-obs[1])*(x[2,t+1]-obs[1]) - obs[2]**2)
+                                    -((x[0,t]-obs[0])*(x[0,t]-obs[0]) + (x[2,t]-obs[1])*(x[2,t]-obs[1]) - obs[2]**2)
+                                    >= -self.gamma*((x[0,t]-obs[0])*(x[0,t]-obs[0])
+                                                    + (x[2,t]-obs[1])*(x[2,t]-obs[1])- obs[2]**2))
+            '''
+            # CBF constraint
+            for obs in self.obstacles:
+                constraints += [((x[0,t+1]-obs[0])**2 + (x[2,t+1]-obs[1])**2 - obs[2]**2)
+                                -((x[0,t]-obs[0])**2 + (x[2,t]-obs[1])**2 - obs[2]**2)
+                                >= -self.gamma*((x[0,t]-obs[0])**2 + (x[2,t]-obs[1])**2 - obs[2]**2)]
 
-        constraints += [x[:, 0] == x_current]
-        constraints += [x[1,:] >= self.v_lim[0]]
-        constraints += [x[1,:] <= self.v_lim[1]]
+             '''
+        # Cost Function
+        state_cost = sum((z[:, t]) @ self.Q @ z[:, t] for t in range(self.N + 1))
+        control_cost = sum((u[:, t]) @ self.R @ u[:, t] for t in range(self.N))
+        model.setObjective(state_cost+control_cost+ z[:, self.N] @ self.Q @ z[:, self.N], GRB.MINIMIZE)
+        model.optimize()
 
-        constraints += [cvxpy.abs(u[0,:]) <= self.u_max]
-        constraints += [cvxpy.abs(u[1,:]) <= self.u_max]
 
-        MPC_problem = cvxpy.Problem(cvxpy.Minimize(cost), constraints)
-        MPC_problem.solve(solver=cvxpy.GUROBI, verbose=False)
-
-        if MPC_problem.status == cvxpy.OPTIMAL or MPC_problem.status == cvxpy.OPTIMAL_INACCURATE:
-            x1_traj = self.get_nparray_from_matrix(x.value[0, :])
-            x2_traj = self.get_nparray_from_matrix(x.value[1, :])
-            x3_traj = self.get_nparray_from_matrix(x.value[2, :])
-            x4_traj = self.get_nparray_from_matrix(x.value[3, :])
-            u1_traj = self.get_nparray_from_matrix(u.value[0, :])
-            u2_traj = self.get_nparray_from_matrix(u.value[1, :])
+        if model.Status == GRB.OPTIMAL:
+            solution = model.getVars()
+            #X_solution = solution[4*self.N+4:5*self.N+4]
+            x1_traj = [item.x for item in solution[:self.N]]
+            x2_traj = [item.x for item in solution[self.N+1:2*self.N+1]]
+            x3_traj = [item.x for item in solution[2*self.N+2:3*self.N+2]]
+            x4_traj = [item.x for item in solution[3*self.N+3:4*self.N+3]]
+            u1_traj = [item.x for item in solution[4*self.N+4:5*self.N+4]]
+            u2_traj = [item.x for item in solution[5*self.N+4:6*self.N+4]]
         
             return x1_traj, x2_traj, x3_traj, x4_traj, u1_traj, u2_traj
         else:
@@ -246,15 +264,15 @@ if __name__ == "__main__":
     plot_border = 32
     target_speed = 10.0  # [m/s]
     interpolated_dist = 0.2  # [m] distance between interpolated position state
-    obstacles = [(15,10,2)] # Circular Obstacles [(x1,x3,radius)]
+    obstacles = [(15.5,10,1.0)] # Circular Obstacles [(x1,x3,radius)]
 
     path_to_continuous_waypoints = os.getcwd()+"/Saved_continuous_waypoints/state_double_integrator_traj.npy"
     waypoints = read_waypoints(path_to_continuous_waypoints)
-    print(waypoints)
+
     x_init = np.array([waypoints[0, 0], 0.0, waypoints[0, 1], 0.0])  # [p1,v1,p2,v2]
 
     MPC = MPC_controller(MPC_horizon=5,dt=0.2,
-                        state_weight=np.diag([5.0, 0.1, 5.0, 0.1]), # Q matrix
+                        state_weight=np.diag([2.0, 0.1, 2.0, 0.1]), # Q matrix
                         control_weight=np.diag([0.1, 0.1]),x_init=x_init,obstacles=obstacles,
                          show_animation=True,save_animation = False) # R matrix
 
