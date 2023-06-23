@@ -10,22 +10,26 @@ from Utilits.utils import read_waypoints
 
 '''
 Created on Wednesday May 17th, 2023
+by Guang Yang
+
+Utilits are from PythonRobotics: https://github.com/AtsushiSakai/PythonRobotics
 
 This code takes into waypoints (positions in 2d) and caclulate the velocity profile between them for MPC tracking
 
 
 '''
 class MPC_controller:
-    def __init__(self, MPC_horizon, dt, state_weight, control_weight, x_init, obstacles,
+    def __init__(self, MPC_horizon, dt, state_weight, control_weight, interpolated_dist ,x_init, obstacles,
                  show_animation=True, save_animation = False) -> None:
         self.N = MPC_horizon
         self.dt = dt
+        self.interpolated_dist = interpolated_dist
         self.Q = state_weight
         self.R = control_weight
         self.obstacles = obstacles
         self.Qf = self.Q
-        self.v_lim = [-5.0, 5.0]
-        self.u_max = 20.0
+        self.v_lim = [-3.0, 3.0]
+        self.u_max = 5.0
         self.x_init = x_init
         self.save_animation = save_animation
         self.show_animation = show_animation
@@ -120,20 +124,56 @@ class MPC_controller:
     def within_goal(self, x_current, x_goal):
         return np.linalg.norm(x_current - x_goal) <= self.goal_dist
 
-    def calculate_local_reference(self, x_ref, t_step):
+    def nearest_interpolated_point(self, x_ref, x_current,target_index):
+        # find nearest point on the interpolated trajectory
+        N_indx_search = 10 # search for the next 10 point
+        dx = [x_current[0]-icx for icx in x_ref[0][target_index:target_index+N_indx_search]]
+        dy = [x_current[2]-icy for icy in x_ref[2][target_index:target_index+N_indx_search]]
+        d = [idx**2 + idy**2 for (idx, idy) in zip(dx, dy)]
+        mind = min(d)
+        ind = d.index(mind) + target_index
 
-        # Create an x_local_ref as a shifting window over time.
-        x_local_ref = np.zeros((self.state_dimension, self.N+1))
+        return ind
 
-        if t_step < len(x_ref[0])-self.N-1:
+    def calculate_local_reference(self, x_ref, t_step, x_current ,target_index = 0, tracking_mode = "running_time"):
+
+        if tracking_mode == "running_time":
+            # Create an x_local_ref as a shifting window over time.
+            x_local_ref = np.zeros((self.state_dimension, self.N+1))
+
+            if t_step < len(x_ref[0])-self.N-1:
+                for i in range(self.N+1):
+                    x_local_ref[:, i] = x_ref[:, i+t_step]
+            else:
+                print("running out of reference trajectory")
+                for i in range(self.N+1):
+                    x_local_ref[:, i] = x_ref[:, -1]
+        elif tracking_mode == "closest_interpolated_point":
+            x_local_ref = np.zeros((self.state_dimension, self.N+1))
+            total_interpolated_points_len = len(x_ref[0])
+
+            ind = self.nearest_interpolated_point(x_ref, x_current, target_index)
+            if target_index >= ind:
+                ind = target_index
+            
+            x_local_ref[0,0] = x_ref[0,ind]
+            x_local_ref[1,0] = x_ref[1,ind]
+            x_local_ref[2,0] = x_ref[2,ind]
+            x_local_ref[3,0] = x_ref[3,ind]
+
             for i in range(self.N+1):
-                x_local_ref[:, i] = x_ref[:, i+t_step]
-        else:
-            print("running out of reference trajectory")
-            for i in range(self.N+1):
-                x_local_ref[:, i] = x_ref[:, -1]
-        # Select the closest point to track
-        return x_local_ref
+                if (ind+self.N) < total_interpolated_points_len:
+                    x_local_ref[0,i] = x_ref[0,ind+i]
+                    x_local_ref[1,i] = x_ref[1,ind+i]
+                    x_local_ref[2,i] = x_ref[2,ind+i]
+                    x_local_ref[3,i] = x_ref[3,ind+i]
+                else:
+                    x_local_ref[0,i] = x_ref[0,-1]
+                    x_local_ref[1,i] = x_ref[1,-1]
+                    x_local_ref[2,i] = x_ref[2,-1]
+                    x_local_ref[3,i] = x_ref[3,-1]
+
+        return x_local_ref, ind
 
     def simulation(self, x_ref):
         time = 0
@@ -141,11 +181,14 @@ class MPC_controller:
         simulation_traj = [x_current.copy()]
         u_traj = []
 
-        t_step = 0
+        t_step = 0 # time step for tracking_mode = "running_time"
+        target_idx = 0 # target index for tracking_mode = "closest_interpolated_point"
 
-        while time < self.simulation_max_time:
-            x_local_ref = self.calculate_local_reference(x_ref, t_step)
-            x1_traj_N, x2_traj_N, x3_traj_N, x4_traj_N, u1_traj_N, u2_traj_N = self.mpc_control(x_local_ref, x_current)
+        while time <= self.simulation_max_time:
+            x_local_ref, target_idx = self.calculate_local_reference(x_ref, t_step, x_current, target_index=target_idx, 
+                                                         tracking_mode = "closest_interpolated_point")
+            x1_traj_N, x2_traj_N, x3_traj_N, x4_traj_N, u1_traj_N, u2_traj_N = self.mpc_control(x_local_ref
+                                                                                                , x_current)
 
             if x1_traj_N is None:
                 print("Cannot find control")
@@ -158,7 +201,7 @@ class MPC_controller:
                 time += self.dt
 
             if self.within_goal([x_current[0], x_current[2]], waypoints[-1]):
-                print("Reach goal")
+                print("Goal is reached!")
                 break
 
             t_step += 1
@@ -203,12 +246,12 @@ class MPC_controller:
 
         return v_interpolated_x, v_interpolated_y
 
-    def waypoints_to_x_ref(self, waypoints, interpolated_dist, target_speed, interpolation_type="linear"):
+    def waypoints_to_x_ref(self, waypoints, target_speed, interpolation_type="linear"):
         if interpolation_type == "linear":
             rx, ry = [], []
             sp = spline_continuity.Spline2D(x=waypoints[:, [0]].flatten(), y=waypoints[:, [1]].flatten(),
                                             kind="linear")
-            s = np.arange(0, sp.s[-1], interpolated_dist)
+            s = np.arange(0, sp.s[-1], self.interpolated_dist)
             for i_s in s:
                 ix, iy = sp.calc_position(i_s)
                 rx.append(ix)
@@ -221,7 +264,7 @@ class MPC_controller:
             interpolated_x1, interpolated_x3, _, _, _ = cubic_spline_planner.calc_spline_course(
                 x=waypoints[:, [0]].flatten(),
                 y=waypoints[:, [1]].flatten(),
-                ds=interpolated_dist)  # ds is the distance between interpolated points
+                ds=self.interpolated_dist)  # ds is the distance between interpolated points
 
 
         x_ref = np.zeros((self.state_dimension, len(interpolated_x1)))
@@ -244,8 +287,8 @@ class MPC_controller:
 
 if __name__ == "__main__":
     plot_border = 32
-    target_speed = 10.0  # [m/s]
-    interpolated_dist = 0.2  # [m] distance between interpolated position state
+    target_speed = 3.0  # [m/s]
+    interpolated_dist = 0.1  # [m] distance between interpolated position state, this is also the tick length
     obstacles = [(15,10,2)] # Circular Obstacles [(x1,x3,radius)]
 
     path_to_continuous_waypoints = os.getcwd()+"/Saved_continuous_waypoints/state_double_integrator_traj.npy"
@@ -253,12 +296,12 @@ if __name__ == "__main__":
     print(waypoints)
     x_init = np.array([waypoints[0, 0], 0.0, waypoints[0, 1], 0.0])  # [p1,v1,p2,v2]
 
-    MPC = MPC_controller(MPC_horizon=5,dt=0.2,
-                        state_weight=np.diag([5.0, 0.1, 5.0, 0.1]), # Q matrix
-                        control_weight=np.diag([0.1, 0.1]),x_init=x_init,obstacles=obstacles,
+    MPC = MPC_controller(MPC_horizon=7,dt=0.1,
+                        state_weight=np.diag([6.0, 1.0, 6.0, 1.0]), # Q matrix
+                        control_weight=np.diag([1.0, 1.0]),interpolated_dist = interpolated_dist,x_init=x_init,obstacles=obstacles,
                          show_animation=True,save_animation = False) # R matrix
 
-    x_ref = MPC.waypoints_to_x_ref(waypoints, interpolated_dist, target_speed, interpolation_type="linear")
+    x_ref = MPC.waypoints_to_x_ref(waypoints, target_speed, interpolation_type="linear")
 
     simulation_traj, u_traj = MPC.simulation(x_ref)
 
