@@ -145,7 +145,6 @@ class MPC_controller:
                 for i in range(self.N+1):
                     x_local_ref[:, i] = x_ref[:, i+t_step]
             else:
-                print("running out of reference trajectory")
                 for i in range(self.N+1):
                     x_local_ref[:, i] = x_ref[:, -1]
         elif tracking_mode == "closest_interpolated_point":
@@ -173,7 +172,7 @@ class MPC_controller:
                     x_local_ref[2,i] = x_ref[2,-1]
                     x_local_ref[3,i] = x_ref[3,-1]
 
-        return x_local_ref, ind
+        return x_local_ref, ind # this ind is the target index for the next time step
 
     def simulation(self, x_ref):
         time = 0
