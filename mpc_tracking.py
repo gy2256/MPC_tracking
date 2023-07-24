@@ -94,7 +94,7 @@ class MPC_controller:
         constraints += [cvxpy.abs(u[1,:]) <= self.u_max]
 
         MPC_problem = cvxpy.Problem(cvxpy.Minimize(cost), constraints)
-        MPC_problem.solve(solver=cvxpy.GUROBI, verbose=False)
+        MPC_problem.solve(verbose=False)
 
         if MPC_problem.status == cvxpy.OPTIMAL or MPC_problem.status == cvxpy.OPTIMAL_INACCURATE:
             x1_traj = self.get_nparray_from_matrix(x.value[0, :])
