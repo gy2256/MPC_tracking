@@ -2,168 +2,169 @@
 # -*- coding: utf-8 -*-
 
 import casadi as ca
-import casadi.tools as ca_tools
 
 import numpy as np
-import time
-from draw import Draw_MPC_point_stabilization_v1
+
+"""
+Created on July 25, 2023
+by Guang Yang
+
+MPC implementation for unicycle model
+"""
 
 
-def step(dt, t0, x0, u, f):
-    k1 = f(x0, u[:, 0])
-    k2 = f(x0 + dt / 2 * k1, u[:, 0])
-    k3 = f(x0 + dt / 2 * k2, u[:, 0])
-    k4 = f(x0 + dt * k3, u[:, 0])
-    state_next_ = x0 + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+class NMPC_Unicycle:
+    def __init__(self, N, dt, state_weight, control_weight, init_state) -> None:
+        self.dt = dt
+        self.N = N
+        self.Q = state_weight
+        self.R = control_weight
+        self.init_state = init_state
 
-    t_ = t0 + dt
-    u_next_ = ca.horzcat(u[1:, :], u[-1, :])
+        # State related variable initialization
+        self.x = ca.SX.sym("x")
+        self.y = ca.SX.sym("y")
+        self.theta = ca.SX.sym("theta")
+        self.states = ca.vertcat(self.x, self.y)
+        self.states = ca.vertcat(self.states, self.theta)
+        self.n_states = self.states.size()[0]
 
-    return t_, state_next_, u_next_
+        # Control related variable initialization
+        self.v = ca.SX.sym("v")
+        self.omega = ca.SX.sym("omega")
+        self.controls = ca.vertcat(self.v, self.omega)
+        self.n_controls = self.controls.size()[0]
+        self.v_max = 1.5  # control u1
+        self.omega_max = np.pi / 4.0  # control u2
+
+        self.dynammics_f = ca.vertcat(
+            self.v * ca.cos(self.theta), self.v * ca.sin(self.theta)
+        )
+        self.dynammics_f = ca.vertcat(self.dynammics_f, self.omega)
+
+        # MPC Solver Initialization
+        self.f = ca.Function(
+            "f",
+            [self.states, self.controls],
+            [self.dynammics_f],
+            ["input_state", "control_input"],
+            ["dynamics"],
+        )
+        self.U = ca.SX.sym("U", self.n_controls, self.N)
+        self.X = ca.SX.sym("X", self.n_states, self.N + 1)
+        self.P = ca.SX.sym("P", self.n_states + self.n_states)
+        self.goal_dist = 0.2  # Termination Condition
+        self.max_simulation_time = 20.0  # Termination Condition
+
+    def step(self, dt, t0, x0, u, f):
+        """
+        RK4 method for integration
+        """
+        k1 = f(x0, u[:, 0])
+        k2 = f(x0 + dt / 2 * k1, u[:, 0])
+        k3 = f(x0 + dt / 2 * k2, u[:, 0])
+        k4 = f(x0 + dt * k3, u[:, 0])
+        state_next_ = x0 + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+
+        t_ = t0 + dt
+        u_next_ = ca.horzcat(u[1:, :], u[-1, :])
+
+        return t_, state_next_, u_next_
+
+    def mpc_control(self, x_current, x_ref):
+        """
+        Input: x_ref: reference trajectory
+
+        Output: State Trajectory and Control Trajectory for the next N steps
+        """
+        # initial condiction
+
+        x0 = x_current.reshape(-1, 1)  # x_current = np.array([0.0, 0.0, 0.0])
+        xs = x_ref.reshape(-1, 1) #x_ref is a sequence of states, this needs to be modified
+        c_p = np.concatenate((x0, xs))
+        u0 = np.array([0.0, 0.0] * self.N).reshape(-1, self.n_controls) # np.ones((N, 2)) # controls
+
+        self.X[:, 0] = self.P[:3]
+
+        for i in range(self.N):
+            k1 = self.f(self.X[:, i], self.U[:, i])
+            k2 = self.f(self.X[:, i] + self.dt / 2 * k1, self.U[:, i])
+            k3 = self.f(self.X[:, i] + self.dt / 2 * k2, self.U[:, i])
+            k4 = self.f(self.X[:, i] + self.dt * k3, self.U[:, i])
+            self.X[:, i + 1] = self.X[:, i] + self.dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+
+        ff = ca.Function(
+            "ff",
+            [self.U, self.P],
+            [self.X],
+            ["input_U", "target_state"],
+            ["horizon_states"],
+        )
+
+        # cost function
+        cost = 0
+        for i in range(self.N):
+            cost = (
+                cost
+                + (self.X[:, i] - self.P[3:]).T @ self.Q @ (self.X[:, i] - self.P[3:])
+                + self.U[:, i].T @ self.R @ self.U[:, i]
+            )
+
+        # Constraints
+
+        g = []
+        for i in range(self.N + 1):
+            g.append(self.X[0, i])
+            g.append(self.X[1, i])
+
+        lbx = [] # lower bound of control
+        ubx = [] # upper bound of control
+        for _ in range(self.N):
+            lbx.append(-self.v_max)
+            lbx.append(-self.omega_max)
+            ubx.append(self.v_max)
+            ubx.append(self.omega_max)
+
+        lbg = -2.0
+        ubg = 2.0
+
+        nlp_prob = {
+            "f": cost,
+            "x": ca.reshape(self.U, -1, 1), # decision vairble u
+            "p": self.P, # parameter P = [x0, xs] current state, reference state
+            "g": ca.vcat(g), # dynamics constraint
+        }
+
+        opts_setting = {
+            "ipopt.max_iter": 100,
+            "ipopt.print_level": 0,
+            "print_time": 0,
+            "ipopt.acceptable_tol": 1e-8,
+            "ipopt.acceptable_obj_change_tol": 1e-6,
+        }
+
+        solver = ca.nlpsol("solver", "ipopt", nlp_prob, opts_setting)
+        init_control = ca.reshape(u0, -1, 1)
+
+        result = solver(
+            x0=init_control, p=c_p, lbg=lbg, lbx=lbx, ubg=ubg, ubx=ubx
+        )
+
+        u_sol = ca.reshape(result["x"], self.n_controls, self.N)
+        u_sol = u_sol[:, 0].toarray()
+        u_sol = u_sol[:,0]
+
+        return u_sol  # Return the first control
+    
 
 
 if __name__ == "__main__":
-    T = 0.2  # sampling time [s]
-    N = 20  # prediction horizon
-    rob_diam = 0.3  # [m]
-    v_max = 0.6
-    omega_max = np.pi / 4.0
-
-    x = ca.SX.sym("x")
-    y = ca.SX.sym("y")
-    theta = ca.SX.sym("theta")
-    states = ca.vertcat(x, y)
-    states = ca.vertcat(states, theta)
-    n_states = states.size()[0]
-
-    v = ca.SX.sym("v")
-    omega = ca.SX.sym("omega")
-    controls = ca.vertcat(v, omega)
-    n_controls = controls.size()[0]
-
-    ## rhs
-    rhs = ca.vertcat(v * ca.cos(theta), v * ca.sin(theta))
-    rhs = ca.vertcat(rhs, omega)
-
-    ## function
-    f = ca.Function(
-        "f", [states, controls], [rhs], ["input_state", "control_input"], ["rhs"]
-    )
-
-    ## for MPC
-    U = ca.SX.sym("U", n_controls, N)
-    X = ca.SX.sym("X", n_states, N + 1)
-    P = ca.SX.sym("P", n_states + n_states)
-
-    ### define
-    X[:, 0] = P[:3]  # initial condiction
-
-    #### define the relationship within the horizon
-    for i in range(N):
-        # f_value = f(X[:, i], U[:, i])
-        # X[:, i+1] = X[:, i] + f_value*T
-
-        k1 = f(X[:, i], U[:, i])
-        k2 = f(X[:, i] + T / 2 * k1, U[:, i])
-        k3 = f(X[:, i] + T / 2 * k2, U[:, i])
-        k4 = f(X[:, i] + T * k3, U[:, i])
-        X[:, i + 1] = X[:, i] + T / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
-
-    ff = ca.Function("ff", [U, P], [X], ["input_U", "target_state"], ["horizon_states"])
-
-    Q = np.array([[1.0, 0.0, 0.0], [0.0, 5.0, 0.0], [0.0, 0.0, 0.1]])
-    R = np.array([[0.5, 0.0], [0.0, 0.05]])
-    #### cost function
-    obj = 0  #### cost
-    for i in range(N):
-        # obj = obj + ca.mtimes([(X[:, i]-P[3:]).T, Q, X[:, i]-P[3:]]) + ca.mtimes([U[:, i].T, R, U[:, i]])
-        # new type to calculate the matrix multiplication
-        obj = (
-            obj + (X[:, i] - P[3:]).T @ Q @ (X[:, i] - P[3:]) + U[:, i].T @ R @ U[:, i]
-        )
-
-    #### constrains
-    g = []  # equal constrains
-    for i in range(N + 1):
-        g.append(X[0, i])
-        g.append(X[1, i])
-
-    nlp_prob = {
-        "f": obj,
-        "x": ca.reshape(U, -1, 1),
-        "p": P,
-        "g": ca.vcat(g),
-    }  # here also can use ca.vcat(g) or ca.vertcat(*g)
-    opts_setting = {
-        "ipopt.max_iter": 100,
-        "ipopt.print_level": 0,
-        "print_time": 0,
-        "ipopt.acceptable_tol": 1e-8,
-        "ipopt.acceptable_obj_change_tol": 1e-6,
-    }
-
-    solver = ca.nlpsol("solver", "ipopt", nlp_prob, opts_setting)
-
-    # Simulation
-    lbg = -2.0
-    ubg = 2.0
-    lbx = []
-    ubx = []
-    for _ in range(N):
-        lbx.append(-v_max)
-        ubx.append(v_max)
-        lbx.append(-omega_max)
-        ubx.append(omega_max)
-    t0 = 0.0
-    x0 = np.array([0.0, 0.0, 0.0]).reshape(-1, 1)  # initial state
-    xs = np.array([1.5, 1.5, 0.0]).reshape(-1, 1)  # final state
-    u0 = np.array([0.0, 0.0] * N).reshape(-1, 2)  # np.ones((N, 2)) # controls
-    x_c = []  # contains for the history of the state
-    u_c = []
-    t_c = []  # for the time
-    xx = []
-    sim_time = 20.0
-
-    ## start MPC
-    mpciter = 0
-    start_time = time.time()
-    index_t = []
-    c_p = np.concatenate((x0, xs))
-    init_control = ca.reshape(u0, -1, 1)
-    res = solver(x0=init_control, p=c_p, lbg=lbg, lbx=lbx, ubg=ubg, ubx=ubx)
-    lam_x_ = res["lam_x"]
-    ### inital test
-    while np.linalg.norm(x0 - xs) > 1e-2 and mpciter - sim_time / T < 0.0:
-        ## set parameter
-        c_p = np.concatenate((x0, xs))
-        init_control = ca.reshape(u0, -1, 1)
-        t_ = time.time()
-        res = solver(
-            x0=init_control, p=c_p, lbg=lbg, lbx=lbx, ubg=ubg, ubx=ubx, lam_x0=lam_x_
-        )
-        lam_x_ = res["lam_x"]
-        # res = solver(x0=init_control, p=c_p,)
-        # print(res['g'])
-        index_t.append(time.time() - t_)
-        u_sol = ca.reshape(
-            res["x"], n_controls, N
-        )  # one can only have this shape of the output
-        ff_value = ff(u_sol, c_p)  # [n_states, N+1]
-        x_c.append(ff_value)
-        u_c.append(u_sol[:, 0])
-        t_c.append(t0)
-        t0, x0, u0 = step(T, t0, x0, u_sol, f)
-
-        x0 = ca.reshape(x0, -1, 1)
-        xx.append(x0.full())
-        mpciter = mpciter + 1
-    t_v = np.array(index_t)
-    print(t_v.mean())
-    print((time.time() - start_time) / (mpciter))
-    draw_result = Draw_MPC_point_stabilization_v1(
-        rob_diam=0.3,
-        init_state=x0.full(),
-        target_state=xs,
-        robot_states=xx,
-        export_fig=False,
-    )
+    state_weight = np.array([[5.0, 0.0, 0.0], [0.0, 5.0, 0.0], [0.0, 0.0, 0.1]])
+    control_weight = np.array([[0.5, 0.0], [0.0, 0.05]])
+    initial_state = np.array([0.0, 0.0, 0.0])
+    target_state = np.array([1.5, 1.5, -np.pi/4.0])
+    Receding_horizon_N = 8
+    dt = 0.1
+    
+    Unicycle = NMPC_Unicycle(Receding_horizon_N, dt, state_weight, control_weight, initial_state)
+    u_sol = Unicycle.mpc_control(initial_state, target_state)

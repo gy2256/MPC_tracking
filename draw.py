@@ -14,7 +14,7 @@ class Draw_MPC_point_stabilization_v1(object):
         robot_states: list,
         init_state: np.array,
         target_state: np.array,
-        rob_diam=0.3,
+        rob_diam=0.25,
         export_fig=False,
     ):
         self.robot_states = robot_states
