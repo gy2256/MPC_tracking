@@ -20,7 +20,6 @@ def step(dt, t0, x0, u, f):
 
     return t_, state_next_, u_next_
 
-
 if __name__ == "__main__":
     T = 0.1  # sampling time [s]
     N = 8  # prediction horizon
@@ -67,7 +66,7 @@ if __name__ == "__main__":
 
     ff = ca.Function("ff", [U, P], [X], ["input_U", "target_state"], ["horizon_states"])
 
-    Q = np.array([[5.0, 0.0, 0.0], [0.0, 5.0, 0.0], [0.0, 0.0, 0.1]])
+    Q = np.array([[5.0, 0.0, 0.0], [0.0, 5.0, 0.0], [0.0, 0.0, 1.5]])
     R = np.array([[0.5, 0.0], [0.0, 0.05]])
     #### cost function
     obj = 0

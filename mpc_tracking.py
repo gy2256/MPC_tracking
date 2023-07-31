@@ -292,7 +292,7 @@ if __name__ == "__main__":
 
     path_to_continuous_waypoints = os.getcwd()+"/Saved_continuous_waypoints/state_double_integrator_traj.npy"
     waypoints = read_waypoints(path_to_continuous_waypoints)
-    print(waypoints)
+    
     x_init = np.array([waypoints[0, 0], 0.0, waypoints[0, 1], 0.0])  # [p1,v1,p2,v2]
 
     MPC = MPC_controller(MPC_horizon=7,dt=0.1,

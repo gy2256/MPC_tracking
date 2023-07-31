@@ -21,7 +21,7 @@ class Spline2D:
         x = self.sx(s)
         y = self.sy(s)
         return x, y
-
+    
 
 def main():
     x = [-2.5, 0.0, 2.5, 5.0, 7.5, 3.0, -1.0]
