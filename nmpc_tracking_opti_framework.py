@@ -13,124 +13,69 @@ MPC implementation for unicycle model
 """
 
 class NMPC_Double_Integrator:
-    def __init__(self, N, dt, state_weight, control_weight, init_state, obstacles) -> None:
+    def __init__(self, N, dt, state_weight, control_weight, init_state, obstacles, robot_radius) -> None:
         self.dt = dt
         self.N = N
         self.Q = state_weight
         self.R = control_weight
         self.init_state = init_state
+        self.robot_radius = robot_radius
+
+        self.obstacles = obstacles # for dCBF constraints
+        self.k_cbf = 1.0 #CBF parameter
+        self.n_states = 4
+        self.n_controls = 2
 
         # State related variable initialization
-        self.x1 = ca.SX.sym("x1")
-        self.v1 = ca.SX.sym("v1")
-        self.x2 = ca.SX.sym("x2")
-        self.v2 = ca.SX.sym("v2")
-        self.states = ca.vertcat(self.x1, self.v1, self.x2, self.v2)
-        self.n_states = self.states.size()[0]
-
-        # Control related variable initialization
-        self.u1 = ca.SX.sym("u1")
-        self.u2 = ca.SX.sym("u2")
-        self.controls = ca.vertcat(self.u1, self.u2)
-        self.n_controls = self.controls.size()[0]
-        self.u_max = 20  # control u1
-
-        self.dynammics_f = ca.vertcat(
-            self.v1, self.u1, self.v2, self.u2
-        )
-
-        # MPC Solver Initialization
-        self.f = ca.Function(
-            "f",
-            [self.states, self.controls],
-            [self.dynammics_f],
-            ["input_state", "control_input"],
-            ["dynamics"],
-        )
-        self.U = ca.SX.sym("U", self.n_controls, self.N)
-        self.X = ca.SX.sym("X", self.n_states, self.N + 1)
-        
-        #self.P = ca.SX.sym("P", self.n_states + self.n_states)
-        #self.P = ca.SX.sym("P", self.n_states + self.n_states*self.N) # P[0:3] = x0, P[3:] = x_ref = [x1[t_0],x2[t_0],x3[t_0],x1[t1],x2[t2],...]
-        self.P = ca.SX.sym("P", self.n_states)
-
+        self.f = lambda xk, uk: ca.vertcat(xk[1], uk[0], xk[3], uk[1])
+        self.u_max = 20
         self.goal_dist = 0.2  # Termination Condition
         self.max_simulation_time = 20.0  # Termination Condition
 
+
     def mpc_control(self, x_current, x_ref):
-        """
-        Input: x_ref: reference trajectory
+        self.opti = Opti()  # Reinitialize the problem to clear previous solution
+        self.X = self.opti.variable(self.n_states, self.N + 1)  # state trajectory
+        self.U = self.opti.variable(self.n_controls, self.N)  # control trajectory
+        # Initial State Constraint
+        x_current = x_current.reshape(-1, 1)
+        self.opti.subject_to(self.X[:, 0] == x_current) # initial state constraint
 
-        Output: State Trajectory and Control Trajectory for the next N steps
-        """
-        # initial condiction
+        #Control bounds Constraint
+        self.opti.subject_to(self.opti.bounded(-self.u_max, self.U[0, :], self.u_max)) # control input constraint
+        self.opti.subject_to(self.opti.bounded(-self.u_max, self.U[1, :], self.u_max))
+        
+        #Dynamics Constraint using RK4, TO DO: switch to closed form to make the problem feasible?
+        for k in range(self.N):
+            k1 = self.f(self.X[:, k], self.U[:, k])
+            k2 = self.f(self.X[:, k] + self.dt / 2 * k1, self.U[:, k])
+            k3 = self.f(self.X[:, k] + self.dt / 2 * k2, self.U[:, k])
+            k4 = self.f(self.X[:, k] + self.dt * k3, self.U[:, k])
+            x_next = self.X[:, k] + self.dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+            self.opti.subject_to(self.X[:, k + 1] == x_next)
 
-        x0 = x_current.reshape(-1, 1)  # x_current = np.array([0.0, 0.0, 0.0])
-        #xs = x_ref.reshape(-1, 1) #x_ref is a sequence of states, this needs to be modified
-        #c_p = np.concatenate((x0, xs))
-        c_p = x0
-        u0 = np.array([0.0, 0.0] * self.N).reshape(-1, self.n_controls) # np.ones((N, 2)) # controls
+        # CBF constraint for circular obstacle
+        for obs in self.obstacles:
+            for i in range(self.N):
+                h = (self.X[0, i] - obs[0])**2 + (self.X[2, i] - obs[1])**2 - (obs[2]+self.robot_radius)**2
+                h_next = (self.X[0, i+1] - obs[0])**2 + (self.X[2, i+1] - obs[1])**2 - (obs[2]+self.robot_radius)**2
 
-        self.X[:, 0] = self.P[:4]
-
-        for i in range(self.N):
-            k1 = self.f(self.X[:, i], self.U[:, i])
-            k2 = self.f(self.X[:, i] + self.dt / 2 * k1, self.U[:, i])
-            k3 = self.f(self.X[:, i] + self.dt / 2 * k2, self.U[:, i])
-            k4 = self.f(self.X[:, i] + self.dt * k3, self.U[:, i])
-            self.X[:, i + 1] = self.X[:, i] + self.dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+                self.opti.subject_to(h_next - h + self.k_cbf * h >= 0)
 
         # cost function
         cost = 0
-        for i in range(1, self.N):
-            cost = (
-                cost + (self.X[:,i]-x_ref[:,i]).T @ self.Q @ (self.X[:,i]-x_ref[:,i]) 
-                + self.U[:,i].T @ self.R @ self.U[:,i]
-            )
+        for i in range(self.N):
+            cost += (self.X[:, i]-x_ref[:,i]).T @ self.Q @ (self.X[:, i]-x_ref[:,i]) + self.U[:, i].T @ self.R @ self.U[:, i]
+        self.opti.minimize(cost)
 
-        # Constraints
+        solver_option = {"verbose": False, "ipopt.print_level": 0, "print_time": 0}
 
-        g = []
-        for i in range(self.N + 1):
-            g.append(self.X[0, i])
-            g.append(self.X[2, i])
-
-        lbx = [] # lower bound of control
-        ubx = [] # upper bound of control
-        for _ in range(self.N*self.n_controls):
-            lbx.append(-self.u_max)
-            ubx.append(self.u_max)
-        
-        # State bound constraints
-        lbg = -20.0
-        ubg = 20.0
-        
-
-        nlp_prob = {
-            "f": cost,
-            "x": ca.reshape(self.U, -1, 1), # decision vairble u
-            "p": self.P, # parameter P = [x0, xs] current state, reference state
-            "g": ca.vcat(g), # dynamics constraint
-        }
-
-        opts_setting = {
-            "ipopt.max_iter": 100,
-            "ipopt.print_level": 0,
-            "print_time": 0,
-            "ipopt.acceptable_tol": 1e-8,
-            "ipopt.acceptable_obj_change_tol": 1e-6,
-        }
-
-        solver = ca.nlpsol("solver", "ipopt", nlp_prob, opts_setting)
-        init_control = ca.reshape(u0, -1, 1)
-
-        result = solver(
-            x0=init_control, p=c_p, lbg=lbg, lbx=lbx, ubg=ubg, ubx=ubx
-        )
-
-        u_sol = ca.reshape(result["x"], self.n_controls, self.N)
-        u_sol = u_sol[:, 0].toarray()
+        self.opti.solver("ipopt",solver_option)
+        self.solution = self.opti.solve()
+        u_sol = self.solution.value(self.U)
         u_sol = u_sol[:, 0]
+
+        del self.opti
 
         return u_sol  # Return the first control
 

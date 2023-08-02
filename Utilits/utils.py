@@ -274,12 +274,14 @@ class Animate_unicycle_robot():
         return self.robot_arr, self.robot_body
 
 class Animate_double_integrator_robot():
-    def __init__(self, init_state, state_history, robot_radius):
+    def __init__(self, x_ref, init_state, state_history, robot_radius, obstacles, state_boundary):
+        self.x_ref = x_ref
         self.init_state = init_state
         self.robot_radius = robot_radius
         self.state_history = state_history
+        self.obstacles = obstacles
         self.fig = plt.figure()
-        self.ax = plt.axes(xlim=(-3.0, 3.0), ylim=(-3.0, 3.0))
+        self.ax = plt.axes(xlim=(state_boundary[0], state_boundary[1]), ylim=(state_boundary[2], state_boundary[3]))
         self.animation_init()
         self.animation = animation.FuncAnimation(
             self.fig,
@@ -289,30 +291,51 @@ class Animate_double_integrator_robot():
             interval=100,
             repeat=False,
         )
-
+        #self.FFwriter = animation.FFMpegWriter(fps=10)
         plt.show()
 
+    def save_animation(self, filename):
+        # Save the animation as an mp4 video using the FFmpeg writer
+        Writer = animation.FFMpegWriter(fps=20)
+        self.animation.save(filename, writer=Writer)
 
     def animation_init(self):
+        self.ax.set_aspect("equal")
+        self.ax.plot(self.x_ref[0, :], self.x_ref[2, :], "b--")
+        self.ax.plot(self.x_ref[0,-1], self.x_ref[2,-1], "go")
+        for obs in self.obstacles:
+            self.obstacle_circle = plt.Circle(
+                obs[:2], obs[2], color="k", fill=True
+            )
+            self.ax.add_artist(self.obstacle_circle)
 
         self.robot_body = plt.Circle(
             self.init_state[:2], self.robot_radius, color="r", fill=False
         )
+        self.robot_body_visible = False
         self.ax.add_artist(self.robot_body)
-
 
 
     def animation_loop(self, indx):
         position_x1 = self.state_history[indx][0]
         position_x2 = self.state_history[indx][2]
 
-        self.robot_body.remove()
-        self.robot_body = plt.Circle(
-            (position_x1,position_x2), self.robot_radius, color="r", fill=False
-        )
-        self.ax.add_artist(self.robot_body)
-        self.robot_body.center = [position_x1, position_x2]
+        if indx == 0 or indx == len(self.state_history) - 1:
+            # If it's the first or last frame, remove the robot body to avoid displaying it
+            if self.robot_body_visible:
+                self.robot_body.remove()
+                self.robot_body_visible = False
+        else:
+            self.robot_body.center = [position_x1, position_x2]
+            if not self.robot_body.get_visible():
+                self.ax.add_artist(self.robot_body)
+                self.robot_body_visible = True
 
-        return self.robot_body
+        #self.robot_body = plt.Circle(
+        #    (position_x1,position_x2), self.robot_radius, color="r", fill=False
+        #)
+        #self.ax.add_artist(self.robot_body)
+
+
 
 
