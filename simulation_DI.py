@@ -11,11 +11,11 @@ if __name__ == "__main__":
     control_weight = np.diag([1.0, 1.0])
     initial_state = np.array([0.0, 0.0, 0.0, 0.0])
     current_state = initial_state
-    obstacles = [[1.25, 1.28, 0.35], [2.96, -0.15,0.22]]
+    obstacles = [[1.25, 1.28, 0.35], [2.96, -0.15, 0.22]]
     robot_radius = 0.25
     state_boundary = [-2, 5, -2, 5] # [x_min, x_max, y_min, y_max]
 
-    target_speed = 1.0
+    target_speed = 0.5
     Receding_horizon_N = 6
     dt = 0.1
     current_time = 0.0 #time, float
@@ -25,7 +25,7 @@ if __name__ == "__main__":
     Double_integrator = NMPC_Double_Integrator(Receding_horizon_N, dt, state_weight, control_weight, initial_state,
                                                obstacles, robot_radius)
 
-    waypoints = np.array([[initial_state[0], initial_state[2]], [2.5, 2.5], [2.0,0.0], [4.2, 0.0]])
+    waypoints = np.array([[initial_state[0], initial_state[2]], [2.5, 2.5], [2.0,0.0], [4.6, 0.0]])
     x_ref = waypoints_to_x_ref(waypoints, target_speed, interpolation_type="linear", model="Double_Integrators") # x_ref = [[x, y, theta],...,] for unicycle model
 
     state_history = [initial_state]

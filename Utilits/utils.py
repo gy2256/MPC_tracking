@@ -200,13 +200,16 @@ def step_double_integrator(dt, current_t, current_state, u):
     return next_t, next_state
 
 class Animate_unicycle_robot():
-    def __init__(self, init_state, target_state, state_history, robot_radius):
+    def __init__(self, x_ref, init_state, target_state, state_history, robot_radius, obstacles, state_boundary):
+        self.x_ref = x_ref
         self.init_state = init_state
         self.target_state = target_state
         self.robot_radius = robot_radius
         self.state_history = state_history
+        self.obstacles = obstacles
+        self.state_boundary = state_boundary
         self.fig = plt.figure()
-        self.ax = plt.axes(xlim=(-3.0, 3.0), ylim=(-3.0, 3.0))
+        self.ax = plt.axes(xlim=(state_boundary[0], state_boundary[1]), ylim=(state_boundary[2], state_boundary[3]))
         self.animation_init()
         self.animation = animation.FuncAnimation(
             self.fig,
@@ -218,9 +221,16 @@ class Animate_unicycle_robot():
         )
 
         plt.show()
-
+    def save_animation(self, filename):
+        # Save the animation as an mp4 video using the FFmpeg writer
+        Writer = animation.FFMpegWriter(fps=20)
+        self.animation.save(filename, writer=Writer)
 
     def animation_init(self):
+        self.ax.set_aspect("equal")
+        self.ax.plot(self.x_ref[0, :], self.x_ref[1, :], "b--")
+        self.ax.plot(self.x_ref[0, -1], self.x_ref[1, -1], "go")
+
         self.target_circle = plt.Circle(
             self.target_state[:2], self.robot_radius, color="b", fill=False
         )
@@ -253,6 +263,7 @@ class Animate_unicycle_robot():
 
 
     def animation_loop(self, indx):
+
         position = self.state_history[indx][:2]
         orientation = self.state_history[indx][2]
         self.robot_body.remove()
