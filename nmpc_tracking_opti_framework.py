@@ -4,6 +4,7 @@
 import casadi as ca
 from casadi import Opti
 import numpy as np
+import time
 
 """
 Created on July 25, 2023
@@ -16,13 +17,14 @@ class NMPC_Double_Integrator:
     def __init__(self, N, dt, state_weight, control_weight, init_state, obstacles, robot_radius) -> None:
         self.dt = dt
         self.N = N
+        self.CBF_N = 3 #Horizon for CBF constraints (less than N)
         self.Q = state_weight
         self.R = control_weight
         self.init_state = init_state
         self.robot_radius = robot_radius
 
         self.obstacles = obstacles # for dCBF constraints
-        self.k_cbf = 1.0 #CBF parameter
+        self.k_cbf = 0.6 #CBF parameter
         self.n_states = 4
         self.n_controls = 2
 
@@ -34,9 +36,11 @@ class NMPC_Double_Integrator:
 
 
     def mpc_control(self, x_current, x_ref):
+        start_time = time.time()
         self.opti = Opti()  # Reinitialize the problem to clear previous solution
         self.X = self.opti.variable(self.n_states, self.N + 1)  # state trajectory
         self.U = self.opti.variable(self.n_controls, self.N)  # control trajectory
+        self.cbf_slack = self.opti.variable(len(self.obstacles), self.CBF_N+1) # slack variable for dCBF constraints
         # Initial State Constraint
         x_current = x_current.reshape(-1, 1)
         self.opti.subject_to(self.X[:, 0] == x_current) # initial state constraint
@@ -54,26 +58,57 @@ class NMPC_Double_Integrator:
             x_next = self.X[:, k] + self.dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
             self.opti.subject_to(self.X[:, k + 1] == x_next)
 
-        # CBF constraint for circular obstacle
-        for obs in self.obstacles:
-            for i in range(self.N):
-                h = (self.X[0, i] - obs[0])**2 + (self.X[2, i] - obs[1])**2 - (obs[2]+self.robot_radius)**2
-                h_next = (self.X[0, i+1] - obs[0])**2 + (self.X[2, i+1] - obs[1])**2 - (obs[2]+self.robot_radius)**2
-
-                self.opti.subject_to(h_next - h + self.k_cbf * h >= 0)
 
         # cost function
         cost = 0
         for i in range(self.N):
-            cost += (self.X[:, i]-x_ref[:,i]).T @ self.Q @ (self.X[:, i]-x_ref[:,i]) + self.U[:, i].T @ self.R @ self.U[:, i]
+            cost += ((self.X[:, i]-x_ref[:,i]).T @ self.Q @ (self.X[:, i]-x_ref[:,i]) +
+                     self.U[:, i].T @ self.R @ self.U[:, i])
+
+        terminal_cost = ((self.X[:, self.N]-x_ref[:,self.N]).T @ self.Q @ (self.X[:, self.N]-x_ref[:,self.N]))
+        cost += terminal_cost
+
+
+        # CBF constraint for circular obstacle
+        for obs_inx, obs in zip(range(len(self.obstacles)),self.obstacles):
+            for i in range(self.CBF_N):
+                h = ((self.X[0, i] - obs[0]) ** 2 + (self.X[2, i] - obs[1]) ** 2 - (obs[2] + self.robot_radius) ** 2
+                     - self.cbf_slack[obs_inx, i])
+                h_next = ((self.X[0, i + 1] - obs[0]) ** 2 + (self.X[2, i + 1] - obs[1]) ** 2 - (
+                            obs[2] + self.robot_radius) ** 2
+                          - self.cbf_slack[obs_inx, i + 1])
+
+
+                self.opti.subject_to(h_next - h + self.k_cbf * h >= 0)
+                self.opti.subject_to(self.cbf_slack[obs_inx, i] >= 0)
+                cost += 1000*self.cbf_slack[obs_inx, i]
+            self.opti.subject_to(self.cbf_slack[obs_inx, i+1] >= 0)
+            cost += 1000*self.cbf_slack[obs_inx, i+1]
+
         self.opti.minimize(cost)
 
-        solver_option = {"verbose": False, "ipopt.print_level": 0, "print_time": 0}
+        p_opts = {"expand": True, "print_time": False}
+        s_opts = {"max_cpu_time": 0.1,
+                  "print_level": 0,
+                  "tol": 5e-1,
+                  "dual_inf_tol": 5.0,
+                  "constr_viol_tol": 1e-1,
+                  "compl_inf_tol": 1e-1,
+                  "acceptable_tol": 1e-2,
+                  "acceptable_constr_viol_tol": 0.01,
+                  "acceptable_dual_inf_tol": 1e10,
+                  "acceptable_compl_inf_tol": 0.01,
+                  "acceptable_obj_change_tol": 1e20,
+                  "diverging_iterates_tol": 1e20,
+                  "nlp_scaling_method": "none"}
+        self.opti.solver("ipopt",p_opts,s_opts)
 
-        self.opti.solver("ipopt",solver_option)
         self.solution = self.opti.solve()
         u_sol = self.solution.value(self.U)
         u_sol = u_sol[:, 0]
+
+        finish_time = time.time()-start_time
+        print("MPC solver time: ", finish_time)
 
         del self.opti
 
@@ -84,6 +119,7 @@ class NMPC_Unicycle:
     def __init__(self, N, dt, state_weight, control_weight, init_state, obstacles, robot_radius) -> None:
         self.dt = dt
         self.N = N
+        self.CBF_N = 3
         self.Q = state_weight
         self.R = control_weight
         self.init_state = init_state
@@ -126,7 +162,7 @@ class NMPC_Unicycle:
 
         # CBF constraint for circular obstacle
         for obs in self.obstacles:
-            for i in range(self.N):
+            for i in range(self.CBF_N):
                 h = (self.X[0, i] - obs[0]) ** 2 + (self.X[2, i] - obs[1]) ** 2 - (obs[2] + self.robot_radius) ** 2
                 h_next = (self.X[0, i + 1] - obs[0]) ** 2 + (self.X[2, i + 1] - obs[1]) ** 2 - (
                             obs[2] + self.robot_radius) ** 2

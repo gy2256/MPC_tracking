@@ -11,17 +11,17 @@ if __name__ == "__main__":
     control_weight = np.diag([1.0, 1.0])
     initial_state = np.array([0.0, 0.0, 0.0, 0.0])
     current_state = initial_state
-    obstacles = [[1.25, 1.28, 0.35], [2.96, -0.15, 0.22]]
+    obstacles = [[1.708, 1.98, 0.25],[0.799, 0.333, 0.25], [2.5, -0.0 , 0.25]]
     robot_radius = 0.25
     state_boundary = [-2, 5, -2, 5] # [x_min, x_max, y_min, y_max]
 
     target_speed = 0.5
-    Receding_horizon_N = 6
+    Receding_horizon_N = 10
     dt = 0.1
     current_time = 0.0 #time, float
     t_step = 0  # time step, integer
     target_index = 0 # target index for tracking_mode = "closest_interpolated_point"
-    simulation_max_time = 50.0
+    simulation_max_time = 25.0
     Double_integrator = NMPC_Double_Integrator(Receding_horizon_N, dt, state_weight, control_weight, initial_state,
                                                obstacles, robot_radius)
 
@@ -49,7 +49,6 @@ if __name__ == "__main__":
         current_state = next_state
         current_time += dt
         t_step += 1
-
 
     animator = Animate_double_integrator_robot(x_ref, initial_state, state_history, robot_radius, obstacles, state_boundary)
     animator.save_animation("CBF-MPC.mp4")

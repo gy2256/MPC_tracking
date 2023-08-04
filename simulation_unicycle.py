@@ -10,7 +10,7 @@ if __name__ == "__main__":
     initial_state = np.array([0.0, 0.0, 0.0])
     current_state = initial_state
     obstacles = []
-    #target_state = np.array([1.5, 1.5, -np.pi / 4.0])
+
     target_speed = 1.5
     Receding_horizon_N = 6
     robot_radius = 0.25
